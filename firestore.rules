@@ -1,0 +1,106 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Catch-all Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helpers ---
+    function isSignedIn() {
+      return request.auth != null && request.auth.token.email_verified == true;
+    }
+    
+    function isOwner(ownerId) {
+      return isSignedIn() && request.auth.uid == ownerId;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    // --- Validation Helpers ---
+    function isValidProject(data) {
+      return data.keys().hasAll(['name', 'createdAt', 'ownerId']) &&
+             data.keys().size() <= 4 && // name, description, createdAt, ownerId
+             data.name is string && data.name.size() > 0 && data.name.size() <= 200 &&
+             (data.get('description', '') is string && data.get('description', '').size() <= 2000) &&
+             data.createdAt == request.time &&
+             data.ownerId == request.auth.uid;
+    }
+
+    function isValidFile(data) {
+      return data.keys().hasAll(['name', 'size', 'uploadedAt']) &&
+             data.keys().size() <= 7 && // name, size, type, previewUrl, videoUrl, uploadedAt, type_group
+             data.name is string && data.name.size() > 0 && data.name.size() <= 255 &&
+             data.size is number && data.size >= 0 && data.size <= 107374182400 && // 100GB limit
+             (data.get('type', '') is string && data.get('type', '').size() <= 128) &&
+             (data.get('previewUrl', '') is string && data.get('previewUrl', '').size() <= 1048576) &&
+             (data.get('videoUrl', '') is string && data.get('videoUrl', '').size() <= 4096) &&
+             (data.get('type_group', '') is string && data.get('type_group', '').size() <= 20) &&
+             data.uploadedAt == request.time;
+    }
+
+    // --- Main Rules ---
+    match /projects/{projectId} {
+      allow list: if isSignedIn() && resource.data.ownerId == request.auth.uid;
+      allow get: if isOwner(resource.data.ownerId);
+      
+      allow create: if isSignedIn() && isValidId(projectId) && isValidProject(incoming());
+      
+      allow update: if isOwner(existing().ownerId) && 
+                      isValidProject(incoming()) &&
+                      incoming().ownerId == existing().ownerId &&
+                      incoming().createdAt == existing().createdAt &&
+                      incoming().diff(existing()).affectedKeys().hasOnly(['name', 'description']);
+      
+      allow delete: if isOwner(existing().ownerId);
+
+      // Subcollections
+      match /videoFiles/{fileId} {
+        allow list, get: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId);
+        allow create: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) && 
+                        isValidId(fileId) && isValidFile(incoming());
+        allow update: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['aiAnalysis', 'customTags']) &&
+                        (!('aiAnalysis' in incoming()) || (
+                          incoming().aiAnalysis is map &&
+                          incoming().aiAnalysis.keys().hasAll(['summary', 'tags']) &&
+                          incoming().aiAnalysis.summary is string &&
+                          incoming().aiAnalysis.tags is list
+                        )) &&
+                        (!('customTags' in incoming()) || (
+                          incoming().customTags is list
+                        ));
+        allow delete: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId);
+      }
+
+      match /sourceFiles/{fileId} {
+        allow list, get: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId);
+        allow create: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) && 
+                        isValidId(fileId) && isValidFile(incoming());
+        allow update: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['aiAnalysis', 'customTags']) &&
+                        (!('aiAnalysis' in incoming()) || (
+                          incoming().aiAnalysis is map &&
+                          incoming().aiAnalysis.keys().hasAll(['summary', 'tags']) &&
+                          incoming().aiAnalysis.summary is string &&
+                          incoming().aiAnalysis.tags is list
+                        )) &&
+                        (!('customTags' in incoming()) || (
+                          incoming().customTags is list
+                        ));
+        allow delete: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId);
+      }
+    }
+  }
+}

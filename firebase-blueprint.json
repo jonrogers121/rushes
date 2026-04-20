@@ -1,0 +1,44 @@
+{
+  "entities": {
+    "Project": {
+      "title": "Project",
+      "description": "A video production project",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The name of the project" },
+        "description": { "type": "string", "description": "Project notes" },
+        "createdAt": { "type": "string", "format": "date-time", "description": "When the project was created" },
+        "ownerId": { "type": "string", "description": "The UID of the user who owns this project" }
+      },
+      "required": ["name", "createdAt", "ownerId"]
+    },
+    "FileMetadata": {
+      "title": "File Metadata",
+      "description": "Metadata for an uploaded file",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "The name of the file" },
+        "size": { "type": "number", "description": "File size in bytes" },
+        "type": { "type": "string", "description": "Mime type" },
+        "previewUrl": { "type": "string", "description": "Temporary URL or cloud storage URL" },
+        "uploadedAt": { "type": "string", "format": "date-time", "description": "When the file was uploaded" },
+        "type_group": { "type": "string", "enum": ["video", "source"], "description": "Category of the file" }
+      },
+      "required": ["name", "size", "uploadedAt"]
+    }
+  },
+  "firestore": {
+    "/projects/{projectId}": {
+      "schema": "Project",
+      "description": "Collection of video projects"
+    },
+    "/projects/{projectId}/videoFiles/{fileId}": {
+      "schema": "FileMetadata",
+      "description": "Video files associated with a project"
+    },
+    "/projects/{projectId}/sourceFiles/{fileId}": {
+      "schema": "FileMetadata",
+      "description": "Source files associated with a project"
+    }
+  }
+}
