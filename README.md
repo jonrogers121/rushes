@@ -20,3 +20,13 @@ View your app in AI Studio: https://ai.studio/apps/17edd76f-6c27-49e1-8f78-8c0fe
 4. Optional: set `VITE_RUSHES_STORAGE_BUCKET` if you want a bucket other than `stillmotion-studio`
 5. Run the app:
    `npm run dev`
+
+## Deployment
+
+If you deploy this app on Netlify or another hostname, add that hostname to Firebase Auth before Google sign-in will work:
+
+1. Open Firebase Console for project `gen-lang-client-0711377142`
+2. Go to `Authentication -> Settings -> Authorized domains`
+3. Add your deployed domain, for example `my-rushes.netlify.app`
+
+Without this, `signInWithPopup` will fail with `auth/unauthorized-domain`.

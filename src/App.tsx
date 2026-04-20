@@ -760,6 +760,11 @@ export default function App() {
       await signInWithPopup(auth, provider);
     } catch (error) {
       console.error('Login failed:', error);
+      if (typeof window !== 'undefined' && typeof error === 'object' && error !== null && 'code' in error && error.code === 'auth/unauthorized-domain') {
+        alert(
+          `Firebase login is blocked for ${window.location.hostname}. Add this domain in Firebase Console -> Authentication -> Settings -> Authorized domains.`
+        );
+      }
     }
   };
 
