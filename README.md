@@ -16,7 +16,7 @@ View your app in AI Studio: https://ai.studio/apps/17edd76f-6c27-49e1-8f78-8c0fe
 1. Install dependencies:
    `npm install`
 2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Set `VITE_GOOGLE_SHEETS_SERVER_URL` in `.env.local` so uploads can use the `google-sheets-server` API. Example: `VITE_GOOGLE_SHEETS_SERVER_URL=http://localhost:3007`
+3. Optional: set `VITE_GOOGLE_SHEETS_SERVER_URL` in `.env.local` to override the upload API base URL. Local development defaults to `http://localhost:3007`; production defaults to `https://google-sheets.onrender.com/`
 4. Optional: set `VITE_RUSHES_STORAGE_BUCKET` if you want a bucket other than `stillmotion-studio`
 5. Run the app:
    `npm run dev`

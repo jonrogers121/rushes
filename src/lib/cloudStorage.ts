@@ -1,7 +1,11 @@
 import type { User } from 'firebase/auth';
 import type { FileMetadata } from '../types';
 
-const DEFAULT_GOOGLE_SHEETS_SERVER_URL = 'http://localhost:3007';
+const DEFAULT_LOCAL_GOOGLE_SHEETS_SERVER_URL = 'http://localhost:3007';
+const DEFAULT_PRODUCTION_GOOGLE_SHEETS_SERVER_URL = 'https://google-sheets.onrender.com/';
+const DEFAULT_GOOGLE_SHEETS_SERVER_URL = import.meta.env.PROD
+  ? DEFAULT_PRODUCTION_GOOGLE_SHEETS_SERVER_URL
+  : DEFAULT_LOCAL_GOOGLE_SHEETS_SERVER_URL;
 const DEFAULT_STORAGE_BUCKET = 'stillmotion-studio';
 const MONGO_OBJECT_ID_PATTERN = /^[a-f0-9]{24}$/i;
 
