@@ -1547,14 +1547,14 @@ export default function App() {
                                 src={file.previewUrl} 
                                 alt={`${file.name} thumbnail`}
                                 className={cn(
-                                  "w-full h-full object-cover transition-opacity",
-                                  selectedFiles.has(file.id) ? "opacity-70" : "opacity-40 group-hover/video:opacity-100"
+                                  "w-full h-full object-cover brightness-110 contrast-105 transition-[filter,opacity]",
+                                  selectedFiles.has(file.id) ? "opacity-85" : "opacity-90 group-hover/video:opacity-100"
                                 )}
                               />
                             ) : (
                               <FileVideo className="w-10 h-10 text-zinc-800" />
                             )}
-                            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 to-transparent opacity-60 pointer-events-none" />
+                            <div className="absolute inset-0 bg-gradient-to-t from-zinc-950 to-transparent opacity-30 pointer-events-none" />
                             
                             {/* Checkbox overlay */}
                             <button
