@@ -22,7 +22,8 @@
         "type": { "type": "string", "description": "Mime type" },
         "previewUrl": { "type": "string", "description": "Temporary URL or cloud storage URL" },
         "uploadedAt": { "type": "string", "format": "date-time", "description": "When the file was uploaded" },
-        "type_group": { "type": "string", "enum": ["video", "source"], "description": "Category of the file" }
+        "type_group": { "type": "string", "enum": ["video", "source"], "description": "Category of the file" },
+        "reviewStatus": { "type": "string", "enum": ["unreviewed", "promoted", "rejected"], "description": "Review outcome for triage" }
       },
       "required": ["name", "size", "uploadedAt"]
     }

@@ -40,13 +40,14 @@ service cloud.firestore {
 
     function isValidFile(data) {
       return data.keys().hasAll(['name', 'size', 'uploadedAt']) &&
-             data.keys().size() <= 7 && // name, size, type, previewUrl, videoUrl, uploadedAt, type_group
+             data.keys().size() <= 8 && // name, size, type, previewUrl, videoUrl, uploadedAt, type_group, reviewStatus
              data.name is string && data.name.size() > 0 && data.name.size() <= 255 &&
              data.size is number && data.size >= 0 && data.size <= 107374182400 && // 100GB limit
              (data.get('type', '') is string && data.get('type', '').size() <= 128) &&
              (data.get('previewUrl', '') is string && data.get('previewUrl', '').size() <= 1048576) &&
              (data.get('videoUrl', '') is string && data.get('videoUrl', '').size() <= 4096) &&
              (data.get('type_group', '') is string && data.get('type_group', '').size() <= 20) &&
+             (data.get('reviewStatus', 'unreviewed') in ['unreviewed', 'promoted', 'rejected']) &&
              data.uploadedAt == request.time;
     }
 
@@ -71,7 +72,7 @@ service cloud.firestore {
         allow create: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) && 
                         isValidId(fileId) && isValidFile(incoming());
         allow update: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) &&
-                        incoming().diff(existing()).affectedKeys().hasOnly(['aiAnalysis', 'customTags']) &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['aiAnalysis', 'customTags', 'reviewStatus']) &&
                         (!('aiAnalysis' in incoming()) || (
                           incoming().aiAnalysis is map &&
                           incoming().aiAnalysis.keys().hasAll(['summary', 'tags']) &&
@@ -80,6 +81,9 @@ service cloud.firestore {
                         )) &&
                         (!('customTags' in incoming()) || (
                           incoming().customTags is list
+                        )) &&
+                        (!('reviewStatus' in incoming()) || (
+                          incoming().reviewStatus in ['unreviewed', 'promoted', 'rejected']
                         ));
         allow delete: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId);
       }
@@ -89,7 +93,7 @@ service cloud.firestore {
         allow create: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) && 
                         isValidId(fileId) && isValidFile(incoming());
         allow update: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId) &&
-                        incoming().diff(existing()).affectedKeys().hasOnly(['aiAnalysis', 'customTags']) &&
+                        incoming().diff(existing()).affectedKeys().hasOnly(['aiAnalysis', 'customTags', 'reviewStatus']) &&
                         (!('aiAnalysis' in incoming()) || (
                           incoming().aiAnalysis is map &&
                           incoming().aiAnalysis.keys().hasAll(['summary', 'tags']) &&
@@ -98,6 +102,9 @@ service cloud.firestore {
                         )) &&
                         (!('customTags' in incoming()) || (
                           incoming().customTags is list
+                        )) &&
+                        (!('reviewStatus' in incoming()) || (
+                          incoming().reviewStatus in ['unreviewed', 'promoted', 'rejected']
                         ));
         allow delete: if isOwner(get(/databases/$(database)/documents/projects/$(projectId)).data.ownerId);
       }

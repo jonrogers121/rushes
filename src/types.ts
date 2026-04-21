@@ -1,3 +1,5 @@
+export type ReviewStatus = 'unreviewed' | 'promoted' | 'rejected';
+
 export interface FileMetadata {
   id: string;
   name: string;
@@ -11,6 +13,7 @@ export interface FileMetadata {
     tags: string[];
   };
   customTags?: string[];
+  reviewStatus?: ReviewStatus;
 }
 
 export interface Project {

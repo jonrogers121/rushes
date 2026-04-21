@@ -116,6 +116,35 @@ export const deleteCloudFile = async (user: User, cloudFileId: string) => {
   }
 };
 
+export const downloadCloudArchiveBlob = async (user: User, ids: string[]) => {
+  const response = await requestWithAuth(user, '/api/veo-video/download-archive', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ ids }),
+  });
+
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  return response.blob();
+};
+
+const downloadDirectFileBlob = async (file: Pick<FileMetadata, 'id' | 'videoUrl'>) => {
+  if (!file.videoUrl) {
+    throw new Error('File does not have a download url.');
+  }
+
+  const response = await fetch(file.videoUrl);
+  if (!response.ok) {
+    throw new Error(await readErrorMessage(response));
+  }
+
+  return response.blob();
+};
+
 export const downloadFileBlob = async (user: User, file: Pick<FileMetadata, 'id' | 'videoUrl'>) => {
   if (!file.videoUrl) {
     throw new Error('File does not have a download url.');
@@ -126,12 +155,19 @@ export const downloadFileBlob = async (user: User, file: Pick<FileMetadata, 'id'
     if (response.ok) {
       return response.blob();
     }
+
+    const proxyError = await readErrorMessage(response);
+    if (response.status === 404) {
+      try {
+        return await downloadDirectFileBlob(file);
+      } catch (fallbackError) {
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new Error(`${proxyError} Direct URL fallback also failed: ${fallbackMessage}`);
+      }
+    }
+
+    throw new Error(proxyError);
   }
 
-  const fallbackResponse = await fetch(file.videoUrl);
-  if (!fallbackResponse.ok) {
-    throw new Error(await readErrorMessage(fallbackResponse));
-  }
-
-  return fallbackResponse.blob();
+  return downloadDirectFileBlob(file);
 };

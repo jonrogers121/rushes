@@ -29,6 +29,7 @@ import {
   Archive,
   File as GenericFile,
   CheckCircle2,
+  XCircle,
   Circle,
   PackageCheck,
   Sparkles,
@@ -40,9 +41,9 @@ import { motion, AnimatePresence } from 'motion/react';
 import JSZip from 'jszip';
 import { GoogleGenAI, Type } from "@google/genai";
 import { cn, formatFileSize } from './lib/utils';
-import { Project, FileMetadata } from './types';
+import { Project, FileMetadata, ReviewStatus } from './types';
 import { auth, db } from './lib/firebase';
-import { deleteCloudFile, downloadFileBlob, isCloudBackedFile, uploadFileToCloud } from './lib/cloudStorage';
+import { deleteCloudFile, downloadCloudArchiveBlob, downloadFileBlob, isCloudBackedFile, uploadFileToCloud } from './lib/cloudStorage';
 import { 
   onAuthStateChanged, 
   signInWithPopup, 
@@ -211,6 +212,75 @@ const handleFirestoreError = (error: any, operation: string, path: string | null
   throw error;
 };
 
+type ReviewFilter = 'all' | ReviewStatus;
+type ReviewFilterCounts = Record<ReviewFilter, number>;
+
+const normalizeReviewStatus = (status?: ReviewStatus): ReviewStatus => status ?? 'unreviewed';
+
+const matchesReviewFilter = (status: ReviewStatus | undefined, filter: ReviewFilter) => {
+  if (filter === 'all') return true;
+  return normalizeReviewStatus(status) === filter;
+};
+
+const getReviewFilterCounts = (files: FileMetadata[]): ReviewFilterCounts => {
+  return files.reduce<ReviewFilterCounts>((counts, file) => {
+    const status = normalizeReviewStatus(file.reviewStatus);
+    counts.all += 1;
+    counts[status] += 1;
+    return counts;
+  }, {
+    all: 0,
+    unreviewed: 0,
+    promoted: 0,
+    rejected: 0,
+  });
+};
+
+const REVIEW_FILTER_OPTIONS: Array<{
+  value: ReviewFilter;
+  label: string;
+  activeClassName: string;
+}> = [
+  {
+    value: 'all',
+    label: 'All',
+    activeClassName: 'border-zinc-700 bg-zinc-800 text-white',
+  },
+  {
+    value: 'unreviewed',
+    label: 'Pending',
+    activeClassName: 'border-zinc-700 bg-zinc-800 text-zinc-200',
+  },
+  {
+    value: 'promoted',
+    label: 'Promoted',
+    activeClassName: 'border-emerald-900/40 bg-emerald-950/30 text-emerald-400',
+  },
+  {
+    value: 'rejected',
+    label: 'Rejected',
+    activeClassName: 'border-red-900/40 bg-red-950/20 text-red-400',
+  },
+];
+
+const REVIEW_STATUS_META: Record<ReviewStatus, {
+  label: string;
+  badgeClassName: string;
+}> = {
+  unreviewed: {
+    label: 'Pending',
+    badgeClassName: 'border-zinc-800 bg-zinc-900/80 text-zinc-500',
+  },
+  promoted: {
+    label: 'Promoted',
+    badgeClassName: 'border-emerald-900/40 bg-emerald-950/30 text-emerald-400',
+  },
+  rejected: {
+    label: 'Rejected',
+    badgeClassName: 'border-red-900/40 bg-red-950/20 text-red-400',
+  },
+};
+
 // --- Components ---
 
 type ButtonProps = React.ButtonHTMLAttributes<HTMLButtonElement> & {
@@ -244,6 +314,93 @@ const Button = ({ className, variant = 'primary', size = 'md', children, ...prop
     >
       {children}
     </button>
+  );
+};
+
+interface ReviewFilterBarProps {
+  counts: ReviewFilterCounts;
+  value: ReviewFilter;
+  onChange: (value: ReviewFilter) => void;
+}
+
+const ReviewFilterBar = ({ counts, value, onChange }: ReviewFilterBarProps) => {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-[9px] font-mono uppercase tracking-[0.2em] text-zinc-600">Filter</span>
+      {REVIEW_FILTER_OPTIONS.map((option) => (
+        <button
+          key={option.value}
+          type="button"
+          onClick={() => onChange(option.value)}
+          className={cn(
+            'inline-flex items-center gap-2 rounded-full border px-3 py-1 text-[9px] font-mono uppercase tracking-[0.2em] transition-colors',
+            value === option.value
+              ? option.activeClassName
+              : 'border-zinc-800 bg-zinc-950/70 text-zinc-500 hover:border-zinc-700 hover:text-zinc-200'
+          )}
+        >
+          <span>{option.label}</span>
+          <span className="text-[8px] tabular-nums opacity-80">{counts[option.value]}</span>
+        </button>
+      ))}
+    </div>
+  );
+};
+
+interface ReviewStatusControlProps {
+  status?: ReviewStatus;
+  onChange: (status: ReviewStatus) => void;
+}
+
+const ReviewStatusControl = ({ status, onChange }: ReviewStatusControlProps) => {
+  const normalizedStatus = normalizeReviewStatus(status);
+  const meta = REVIEW_STATUS_META[normalizedStatus];
+
+  const handleChange = (
+    event: React.MouseEvent<HTMLButtonElement>,
+    nextStatus: Exclude<ReviewStatus, 'unreviewed'>
+  ) => {
+    event.stopPropagation();
+    onChange(normalizedStatus === nextStatus ? 'unreviewed' : nextStatus);
+  };
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className={cn(
+        'inline-flex items-center rounded-full border px-2 py-1 text-[8px] font-mono uppercase tracking-[0.2em]',
+        meta.badgeClassName
+      )}>
+        {meta.label}
+      </span>
+      <div className="flex items-center gap-1">
+        <button
+          type="button"
+          onClick={(event) => handleChange(event, 'promoted')}
+          className={cn(
+            'rounded-md border p-1.5 transition-colors',
+            normalizedStatus === 'promoted'
+              ? 'border-emerald-500/40 bg-emerald-500/15 text-emerald-400'
+              : 'border-zinc-800 bg-zinc-950/70 text-zinc-500 hover:border-emerald-900/40 hover:text-emerald-300'
+          )}
+          title={normalizedStatus === 'promoted' ? 'Clear promoted status' : 'Promote'}
+        >
+          <CheckCircle2 className="w-3.5 h-3.5" />
+        </button>
+        <button
+          type="button"
+          onClick={(event) => handleChange(event, 'rejected')}
+          className={cn(
+            'rounded-md border p-1.5 transition-colors',
+            normalizedStatus === 'rejected'
+              ? 'border-red-500/40 bg-red-500/10 text-red-400'
+              : 'border-zinc-800 bg-zinc-950/70 text-zinc-500 hover:border-red-900/40 hover:text-red-300'
+          )}
+          title={normalizedStatus === 'rejected' ? 'Clear rejected status' : 'Reject'}
+        >
+          <XCircle className="w-3.5 h-3.5" />
+        </button>
+      </div>
+    </div>
   );
 };
 
@@ -287,31 +444,84 @@ const FileDropzone = ({ onFilesAdded, label, accept, icon }: FileDropzoneProps) 
 
 // --- Main App ---
 
-const VideoModal = ({ playingVideo, setPlayingVideo }: { playingVideo: FileMetadata, setPlayingVideo: (v: FileMetadata | null) => void }) => {
+const VideoModal = ({
+  playingVideo,
+  setPlayingVideo,
+  user,
+}: {
+  playingVideo: FileMetadata;
+  setPlayingVideo: (v: FileMetadata | null) => void;
+  user: User;
+}) => {
   const [localUrl, setLocalUrl] = useState<string | null>(null);
   const [errorStatus, setErrorStatus] = useState<boolean>(false);
+  const [isLoadingVideo, setIsLoadingVideo] = useState<boolean>(true);
+  const [videoAspectRatio, setVideoAspectRatio] = useState<number | null>(null);
 
   useEffect(() => {
+    let isActive = true;
+    let objectUrl: string | null = null;
+
+    setLocalUrl(null);
+    setErrorStatus(false);
+    setIsLoadingVideo(true);
+    setVideoAspectRatio(null);
+
+    const setObjectUrl = (blob: Blob) => {
+      objectUrl = URL.createObjectURL(blob);
+      if (isActive) {
+        setLocalUrl(objectUrl);
+        setIsLoadingVideo(false);
+      } else {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+
     if (playingVideo.videoUrl?.startsWith('local:')) {
       const fileId = playingVideo.videoUrl.split(':')[1];
       get(`file_${fileId}`).then(file => {
+        if (!isActive) return;
         if (file) {
-          setLocalUrl(URL.createObjectURL(file as Blob));
+          setObjectUrl(file as Blob);
         } else {
           setErrorStatus(true);
+          setIsLoadingVideo(false);
         }
-      }).catch(() => setErrorStatus(true));
+      }).catch(() => {
+        if (isActive) {
+          setErrorStatus(true);
+          setIsLoadingVideo(false);
+        }
+      });
+    } else if (playingVideo.videoUrl) {
+      downloadFileBlob(user, playingVideo).then((blob) => {
+        setObjectUrl(blob);
+      }).catch((error) => {
+        console.error("Failed to prepare video playback", error);
+        if (isActive) {
+          setErrorStatus(true);
+          setIsLoadingVideo(false);
+        }
+      });
     } else {
-      setLocalUrl(playingVideo.videoUrl || null);
+      setErrorStatus(true);
+      setIsLoadingVideo(false);
     }
 
     return () => {
-      // Cleanup locally created object URLs
-      if (localUrl && localUrl.startsWith('blob:')) {
-        URL.revokeObjectURL(localUrl);
+      isActive = false;
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
       }
     };
-  }, [playingVideo]);
+  }, [playingVideo, user]);
+
+  const handleLoadedMetadata = (event: React.SyntheticEvent<HTMLVideoElement>) => {
+    const { videoWidth, videoHeight } = event.currentTarget;
+    if (videoWidth > 0 && videoHeight > 0) {
+      setVideoAspectRatio(videoWidth / videoHeight);
+    }
+  };
 
   return (
     <motion.div
@@ -338,20 +548,35 @@ const VideoModal = ({ playingVideo, setPlayingVideo }: { playingVideo: FileMetad
           </button>
         </div>
         
-        <div className="flex-1 bg-black aspect-video flex items-center justify-center relative">
+        <div className="flex-1 min-h-0 bg-black flex items-center justify-center relative px-4 py-6 sm:px-8">
           {localUrl ? (
             <video 
               src={localUrl} 
               controls 
               autoPlay 
-              className="w-full h-full"
+              preload="metadata"
+              onLoadedMetadata={handleLoadedMetadata}
+              onError={() => {
+                setErrorStatus(true);
+                setLocalUrl(null);
+              }}
+              className="block max-w-full max-h-[calc(100vh-14rem)] w-auto h-auto object-contain"
+              style={videoAspectRatio ? { aspectRatio: String(videoAspectRatio) } : undefined}
             />
+          ) : isLoadingVideo ? (
+            <div className="flex flex-col items-center justify-center gap-4 text-zinc-500">
+              <div className="w-12 h-12 border-4 border-emerald-500/20 border-t-emerald-500 rounded-full animate-spin" />
+              <p className="font-mono text-sm uppercase tracking-widest">Preparing Video...</p>
+              <p className="text-xs uppercase max-w-xs text-center opacity-50">
+                Loading the source file through the authenticated download path.
+              </p>
+            </div>
           ) : (
             <div className="flex flex-col items-center justify-center gap-4 text-zinc-500">
               <FileVideo className="w-16 h-16 opacity-50" />
               <p className="font-mono text-sm uppercase tracking-widest">Video Stream Unavailable</p>
               <p className="text-xs uppercase max-w-xs text-center opacity-50">
-                {errorStatus ? 'This video is stored locally on another device and has not synced.' : 'This asset was ingested without cloud blob storage active. Re-upload to stream.'}
+                {errorStatus ? 'This video could not be loaded from storage.' : 'This asset was ingested without cloud blob storage active. Re-upload to stream.'}
               </p>
             </div>
           )}
@@ -393,6 +618,8 @@ export default function App() {
   const [activeTab, setActiveTab] = useState<'rushes' | 'assets'>('rushes');
   const [assetPage, setAssetPage] = useState(1);
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
+  const [rushesReviewFilter, setRushesReviewFilter] = useState<ReviewFilter>('all');
+  const [assetsReviewFilter, setAssetsReviewFilter] = useState<ReviewFilter>('all');
 
   // 1. Auth Listener
   useEffect(() => {
@@ -465,10 +692,66 @@ export default function App() {
     projects.find(p => p.id === activeProjectId) || null,
   [projects, activeProjectId]);
 
+  const filteredVideoFiles = useMemo(
+    () => activeVideoFiles.filter((file) => matchesReviewFilter(file.reviewStatus, rushesReviewFilter)),
+    [activeVideoFiles, rushesReviewFilter]
+  );
+
+  const filteredSourceFiles = useMemo(
+    () => activeSourceFiles.filter((file) => matchesReviewFilter(file.reviewStatus, assetsReviewFilter)),
+    [activeSourceFiles, assetsReviewFilter]
+  );
+
+  const rushesFilterCounts = useMemo(
+    () => getReviewFilterCounts(activeVideoFiles),
+    [activeVideoFiles]
+  );
+
+  const assetsFilterCounts = useMemo(
+    () => getReviewFilterCounts(activeSourceFiles),
+    [activeSourceFiles]
+  );
+
+  const allVisibleRushesSelected = filteredVideoFiles.length > 0 && filteredVideoFiles.every((file) => selectedFiles.has(file.id));
+  const allVisibleAssetsSelected = filteredSourceFiles.length > 0 && filteredSourceFiles.every((file) => selectedFiles.has(file.id));
+
   const ITEMS_PER_PAGE = 20;
-  const totalAssetPages = Math.max(1, Math.ceil(activeSourceFiles.length / ITEMS_PER_PAGE));
+  const totalAssetPages = Math.max(1, Math.ceil(filteredSourceFiles.length / ITEMS_PER_PAGE));
   const currentAssetPage = Math.min(assetPage, totalAssetPages);
-  const paginatedSourceFiles = activeSourceFiles.slice((currentAssetPage - 1) * ITEMS_PER_PAGE, currentAssetPage * ITEMS_PER_PAGE);
+  const paginatedSourceFiles = filteredSourceFiles.slice((currentAssetPage - 1) * ITEMS_PER_PAGE, currentAssetPage * ITEMS_PER_PAGE);
+
+  useEffect(() => {
+    setSelectedFiles(new Set());
+  }, [activeProjectId, activeTab, rushesReviewFilter, assetsReviewFilter]);
+
+  useEffect(() => {
+    const visibleIds = new Set(
+      (activeTab === 'rushes' ? filteredVideoFiles : filteredSourceFiles).map((file) => file.id)
+    );
+
+    setSelectedFiles((prev) => {
+      let changed = false;
+      const next = new Set<string>();
+
+      prev.forEach((id) => {
+        if (visibleIds.has(id)) {
+          next.add(id);
+        } else {
+          changed = true;
+        }
+      });
+
+      return changed ? next : prev;
+    });
+  }, [activeTab, filteredVideoFiles, filteredSourceFiles]);
+
+  useEffect(() => {
+    setAssetPage(1);
+  }, [activeProjectId, assetsReviewFilter]);
+
+  useEffect(() => {
+    setAssetPage((prev) => Math.min(prev, totalAssetPages));
+  }, [totalAssetPages]);
 
   const toggleSelectStatus = useCallback((fileId: string) => {
     setSelectedFiles(prev => {
@@ -488,32 +771,78 @@ export default function App() {
     projectId,
     file,
     type,
+    deleteStorage,
   }: {
     projectId: string;
     file: FileMetadata;
     type: 'video' | 'source';
+    deleteStorage: boolean;
   }) => {
-    if (file.videoUrl?.startsWith('local:')) {
+    if (deleteStorage && file.videoUrl?.startsWith('local:')) {
       const localId = file.videoUrl.split(':')[1];
       if (localId) {
         await del(`file_${localId}`);
       }
-    } else if (user && isCloudBackedFile(file)) {
+    } else if (deleteStorage && user && isCloudBackedFile(file)) {
       await deleteCloudFile(user, file.id);
     }
 
     await deleteDoc(doc(db, `projects/${projectId}/${type}Files`, file.id));
   }, [user]);
+
+  const updateFileReviewStatus = useCallback(async ({
+    fileId,
+    type,
+    reviewStatus,
+  }: {
+    fileId: string;
+    type: 'video' | 'source';
+    reviewStatus: ReviewStatus;
+  }) => {
+    if (!activeProject) return;
+
+    try {
+      await setDoc(
+        doc(db, `projects/${activeProject.id}/${type}Files`, fileId),
+        { reviewStatus },
+        { merge: true }
+      );
+    } catch (error) {
+      console.error(`Failed to update review status for ${fileId}`, error);
+      alert('Failed to update review status.');
+    }
+  }, [activeProject]);
   
   const handleBulkDownload = async () => {
     if (selectedFiles.size === 0 || !user) return;
     setIsDownloading(true);
     
     try {
-      const zip = new JSZip();
       const filesToDownload = activeTab === 'rushes' 
         ? activeVideoFiles.filter(f => selectedFiles.has(f.id))
         : activeSourceFiles.filter(f => selectedFiles.has(f.id));
+
+      const allCloudBacked = filesToDownload.length > 0 && filesToDownload.every((file) => isCloudBackedFile(file));
+
+      if (allCloudBacked) {
+        try {
+          const archiveBlob = await downloadCloudArchiveBlob(user, filesToDownload.map((file) => file.id));
+          const url = URL.createObjectURL(archiveBlob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = `Project_${activeProject?.name || 'Export'}_${activeTab}_assets.tar`;
+          a.click();
+          URL.revokeObjectURL(url);
+
+          setSelectedFiles(new Set());
+          return;
+        } catch (archiveError) {
+          console.warn("Cloud archive unavailable; falling back to browser ZIP.", archiveError);
+        }
+      }
+
+      const zip = new JSZip();
+      const failedFiles: string[] = [];
 
       for (const file of filesToDownload) {
         if (!file.videoUrl) continue;
@@ -531,6 +860,7 @@ export default function App() {
           }
         } catch (err) {
           console.error("Failed to add file to zip:", file.name, err);
+          failedFiles.push(file.name);
         }
       }
 
@@ -541,6 +871,10 @@ export default function App() {
       a.download = `Project_${activeProject?.name || 'Export'}_${activeTab}_assets.zip`;
       a.click();
       URL.revokeObjectURL(url);
+
+      if (failedFiles.length > 0) {
+        alert(`Some files could not be added to the ZIP:\n${failedFiles.join('\n')}`);
+      }
       
       setSelectedFiles(new Set()); // Clear selection after download
     } catch (err) {
@@ -555,7 +889,7 @@ export default function App() {
   const [showBulkDeleteConfirm, setShowBulkDeleteConfirm] = useState(false);
   const [fileToDelete, setFileToDelete] = useState<{ projectId: string, fileId: string, type: 'video' | 'source', name: string } | null>(null);
 
-  const handleBulkDelete = async () => {
+  const handleBulkDelete = async (deleteStorage: boolean) => {
     if (selectedFiles.size === 0 || !activeProject) return;
 
     setIsDeleting(true);
@@ -570,6 +904,7 @@ export default function App() {
           projectId: activeProject.id,
           file,
           type,
+          deleteStorage,
         });
       }
 
@@ -819,6 +1154,7 @@ export default function App() {
             uploadedAt: serverTimestamp(),
             previewUrl: previewUrl,
             videoUrl: cloudUpload.videoUrl,
+            reviewStatus: 'unreviewed',
             type_group: type
           };
 
@@ -843,7 +1179,7 @@ export default function App() {
     }
   };
 
-  const confirmRemoveFile = async () => {
+  const confirmRemoveFile = async (deleteStorage: boolean) => {
     if (!fileToDelete) return;
     try {
       const metadataList = fileToDelete.type === 'video' ? activeVideoFiles : activeSourceFiles;
@@ -854,6 +1190,7 @@ export default function App() {
           projectId: fileToDelete.projectId,
           file,
           type: fileToDelete.type,
+          deleteStorage,
         });
       } else {
         await deleteDoc(doc(db, `projects/${fileToDelete.projectId}/${fileToDelete.type}Files`, fileToDelete.fileId));
@@ -873,17 +1210,16 @@ export default function App() {
 
   const deleteProject = async (id: string) => {
     try {
-      // Clean up known local files first to prevent orphaned data in Firestore
-      // (A real production app might use a Cloud Function for deep cleanup)
+      // Project destruction removes project metadata only. Backing cloud files stay preserved.
       if (id === activeProjectId) {
         for (const file of activeVideoFiles) {
-          await removeStoredFile({ projectId: id, file, type: 'video' }).catch((error) => {
-            console.error("Failed to delete project video from storage", error);
+          await removeStoredFile({ projectId: id, file, type: 'video', deleteStorage: false }).catch((error) => {
+            console.error("Failed to remove project video metadata", error);
           });
         }
         for (const file of activeSourceFiles) {
-          await removeStoredFile({ projectId: id, file, type: 'source' }).catch((error) => {
-            console.error("Failed to delete project asset from storage", error);
+          await removeStoredFile({ projectId: id, file, type: 'source', deleteStorage: false }).catch((error) => {
+            console.error("Failed to remove project asset metadata", error);
           });
         }
       }
@@ -1121,21 +1457,36 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-4 text-[10px] font-mono uppercase tracking-widest">
                       <button 
+                        type="button"
                         onClick={() => {
-                          if (selectedFiles.size === activeVideoFiles.length && activeVideoFiles.length > 0) {
+                          if (allVisibleRushesSelected) {
                             setSelectedFiles(new Set());
                           } else {
-                            setSelectedFiles(new Set(activeVideoFiles.map(f => f.id)));
+                            setSelectedFiles(new Set(filteredVideoFiles.map(f => f.id)));
                           }
                         }}
-                        className="text-emerald-500 hover:text-emerald-400 font-bold transition-colors"
+                        disabled={filteredVideoFiles.length === 0}
+                        className={cn(
+                          "font-bold transition-colors",
+                          filteredVideoFiles.length === 0
+                            ? "text-zinc-700 cursor-not-allowed"
+                            : "text-emerald-500 hover:text-emerald-400"
+                        )}
                       >
-                        {selectedFiles.size === activeVideoFiles.length && activeVideoFiles.length > 0 ? "Deselect All" : "Select All"}
+                        {allVisibleRushesSelected ? "Deselect Filtered" : "Select Filtered"}
                       </button>
                       <span className="text-zinc-600">
-                        Count: {activeVideoFiles.length}
+                        Count: {filteredVideoFiles.length} / {activeVideoFiles.length}
                       </span>
                     </div>
+                  </div>
+
+                  <div className="mb-6">
+                    <ReviewFilterBar
+                      counts={rushesFilterCounts}
+                      value={rushesReviewFilter}
+                      onChange={setRushesReviewFilter}
+                    />
                   </div>
 
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
@@ -1167,7 +1518,7 @@ export default function App() {
                         </motion.div>
                       ))}
 
-                      {activeVideoFiles.map((file) => (
+                      {filteredVideoFiles.map((file) => (
                         <motion.div
                           key={file.id}
                           layout
@@ -1232,7 +1583,7 @@ export default function App() {
                                   setFileToDelete({ projectId: activeProject.id, fileId: file.id, type: 'video', name: file.name });
                                 }}
                                 className="p-2 bg-red-950/80 text-red-400 rounded-md hover:bg-red-900 border border-red-900/30"
-                                title="Delete File"
+                                title="Remove File"
                               >
                                 <Trash2 className="w-3 h-3" />
                               </button>
@@ -1251,9 +1602,19 @@ export default function App() {
                             selectedFiles.has(file.id) ? "bg-emerald-950/40" : "bg-[#0f0f0f]"
                           )}>
                             <h4 className="text-zinc-200 font-bold truncate text-[11px] mb-1 tracking-wider uppercase" title={file.name}>{file.name}</h4>
-                            <div className="flex items-center justify-between mb-3">
-                              <span className="text-[9px] font-mono text-zinc-600 uppercase tabular-nums tracking-widest">{formatFileSize(file.size)}</span>
-                              <span className="text-[9px] font-mono text-emerald-900 font-black uppercase tracking-widest bg-emerald-900/10 px-1 border border-emerald-900/20">DAILIES</span>
+                            <div className="flex items-start justify-between gap-3 mb-3">
+                              <div className="flex items-center gap-2 flex-wrap">
+                                <span className="text-[9px] font-mono text-zinc-600 uppercase tabular-nums tracking-widest">{formatFileSize(file.size)}</span>
+                                <span className="text-[9px] font-mono text-emerald-900 font-black uppercase tracking-widest bg-emerald-900/10 px-1 border border-emerald-900/20">DAILIES</span>
+                              </div>
+                              <ReviewStatusControl
+                                status={file.reviewStatus}
+                                onChange={(reviewStatus) => updateFileReviewStatus({
+                                  fileId: file.id,
+                                  type: 'video',
+                                  reviewStatus,
+                                })}
+                              />
                             </div>
                             
                             {(file.aiAnalysis || (file.customTags && file.customTags.length > 0)) && (
@@ -1280,6 +1641,14 @@ export default function App() {
                           </div>
                         </motion.div>
                       ))}
+
+                      {filteredVideoFiles.length === 0 && activeVideoFiles.length > 0 && (
+                        <div className="col-span-full rounded-xl border border-zinc-900 bg-zinc-950/40 p-6 text-center">
+                          <p className="text-[10px] font-mono uppercase tracking-[0.3em] text-zinc-500">
+                            No rushes match the current review filter.
+                          </p>
+                        </div>
+                      )}
                     </AnimatePresence>
                   </div>
                   </motion.section>
@@ -1301,21 +1670,36 @@ export default function App() {
                     </div>
                     <div className="flex items-center gap-4 text-[10px] font-mono uppercase tracking-widest">
                       <button 
+                        type="button"
                         onClick={() => {
-                          if (selectedFiles.size === activeSourceFiles.length && activeSourceFiles.length > 0) {
+                          if (allVisibleAssetsSelected) {
                             setSelectedFiles(new Set());
                           } else {
-                            setSelectedFiles(new Set(activeSourceFiles.map(f => f.id)));
+                            setSelectedFiles(new Set(filteredSourceFiles.map(f => f.id)));
                           }
                         }}
-                        className="text-blue-500 hover:text-blue-400 font-bold transition-colors"
+                        disabled={filteredSourceFiles.length === 0}
+                        className={cn(
+                          "font-bold transition-colors",
+                          filteredSourceFiles.length === 0
+                            ? "text-zinc-700 cursor-not-allowed"
+                            : "text-blue-500 hover:text-blue-400"
+                        )}
                       >
-                        {selectedFiles.size === activeSourceFiles.length && activeSourceFiles.length > 0 ? "Deselect All" : "Select All"}
+                        {allVisibleAssetsSelected ? "Deselect Filtered" : "Select Filtered"}
                       </button>
                       <span className="text-zinc-600">
-                        Count: {activeSourceFiles.length}
+                        Count: {filteredSourceFiles.length} / {activeSourceFiles.length}
                       </span>
                     </div>
+                  </div>
+
+                  <div className="mb-6">
+                    <ReviewFilterBar
+                      counts={assetsFilterCounts}
+                      value={assetsReviewFilter}
+                      onChange={setAssetsReviewFilter}
+                    />
                   </div>
 
                   <div className="space-y-4">
@@ -1432,7 +1816,7 @@ export default function App() {
                                       setFileToDelete({ projectId: activeProject.id, fileId: file.id, type: 'source', name: file.name });
                                     }}
                                     className="p-2 bg-red-950/90 text-red-400 hover:text-white hover:bg-red-900 rounded-md transition-colors pointer-events-auto"
-                                    title="Delete"
+                                    title="Remove"
                                   >
                                     <Trash2 className="w-4 h-4" />
                                   </button>
@@ -1440,9 +1824,19 @@ export default function App() {
                             </div>
                             <div className={cn("p-3 border-t flex flex-col min-h-[50px] shrink-0 transition-colors", selectedFiles.has(file.id) ? "bg-blue-950/40 border-blue-900/50" : "bg-[#0f0f0f] border-zinc-800")}>
                                 <p className="text-[10px] font-bold text-zinc-300 truncate tracking-widest uppercase mb-1" title={file.name}>{file.name}</p>
-                                <p className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">
-                                  {formatFileSize(file.size)}
-                                </p>
+                                <div className="mt-1 flex items-start justify-between gap-2">
+                                  <p className="text-[9px] font-mono text-zinc-600 uppercase tracking-widest">
+                                    {formatFileSize(file.size)}
+                                  </p>
+                                  <ReviewStatusControl
+                                    status={file.reviewStatus}
+                                    onChange={(reviewStatus) => updateFileReviewStatus({
+                                      fileId: file.id,
+                                      type: 'source',
+                                      reviewStatus,
+                                    })}
+                                  />
+                                </div>
                                 
                                 {(file.aiAnalysis || (file.customTags && file.customTags.length > 0)) && (
                                   <div className="pt-2 mt-2 border-t border-zinc-900/50 space-y-2">
@@ -1468,6 +1862,14 @@ export default function App() {
                             </div>
                           </motion.div>
                         ))}
+
+                        {filteredSourceFiles.length === 0 && activeSourceFiles.length > 0 && (
+                          <div className="col-span-full rounded-xl border border-zinc-900 bg-zinc-950/40 p-6 text-center">
+                            <p className="text-[10px] font-mono uppercase tracking-[0.3em] text-zinc-500">
+                              No assets match the current review filter.
+                            </p>
+                          </div>
+                        )}
                       </AnimatePresence>
                     </div>
 
@@ -1579,7 +1981,7 @@ export default function App() {
                         ) : (
                           <>
                             <Trash2 className="w-3.5 h-3.5" />
-                            <span className="text-[10px] uppercase font-bold tracking-widest">Delete All</span>
+                            <span className="text-[10px] uppercase font-bold tracking-widest">Remove All</span>
                           </>
                         )}
                       </Button>
@@ -1616,25 +2018,32 @@ export default function App() {
                          <div className="w-16 h-16 rounded-full bg-red-950/50 border border-red-900/50 flex items-center justify-center mb-6">
                            <Trash2 className="w-8 h-8 text-red-500" />
                          </div>
-                         <h3 className="text-xl font-black text-white uppercase tracking-tight mb-2">Confirm Deletion</h3>
-                         <p className="text-sm text-zinc-400 mb-8">
-                           Are you sure you want to permanently delete <strong className="text-white">{selectedFiles.size}</strong> selected items? This action cannot be undone.
+                         <h3 className="text-xl font-black text-white uppercase tracking-tight mb-2">Remove Selected</h3>
+                         <p className="text-sm text-zinc-400 mb-6">
+                           Remove <strong className="text-white">{selectedFiles.size}</strong> selected items from this project. Choose whether to keep or permanently delete the underlying storage files.
                          </p>
-                         <div className="flex items-center gap-4 w-full">
+                         <div className="flex flex-col gap-3 w-full">
+                           <Button
+                             className="w-full py-3 text-xs tracking-[0.2em] uppercase font-bold bg-white text-black hover:bg-zinc-200 border-0"
+                             onClick={() => handleBulkDelete(false)}
+                             disabled={isDeleting}
+                           >
+                             {isDeleting ? "Processing..." : "Remove From Project"}
+                           </Button>
+                           <Button
+                             className="w-full py-3 text-xs tracking-[0.2em] uppercase font-bold bg-red-600 hover:bg-red-500 text-white border-0"
+                             onClick={() => handleBulkDelete(true)}
+                             disabled={isDeleting}
+                           >
+                             {isDeleting ? "Processing..." : "Delete Everywhere"}
+                           </Button>
                            <Button
                              variant="secondary"
-                             className="flex-1 py-3 text-xs tracking-[0.2em] uppercase font-bold"
+                             className="w-full py-3 text-xs tracking-[0.2em] uppercase font-bold"
                              onClick={() => setShowBulkDeleteConfirm(false)}
                              disabled={isDeleting}
                            >
                              Cancel
-                           </Button>
-                           <Button
-                             className="flex-1 py-3 text-xs tracking-[0.2em] uppercase font-bold bg-red-600 hover:bg-red-500 text-white border-0"
-                             onClick={handleBulkDelete}
-                             disabled={isDeleting}
-                           >
-                             {isDeleting ? "Processing..." : "Confirm Delete"}
                            </Button>
                          </div>
                        </div>
@@ -1663,23 +2072,29 @@ export default function App() {
                          <div className="w-16 h-16 rounded-full bg-red-950/50 border border-red-900/50 flex items-center justify-center mb-6">
                            <Trash2 className="w-8 h-8 text-red-500" />
                          </div>
-                         <h3 className="text-xl font-black text-white uppercase tracking-tight mb-2">Delete File</h3>
-                         <p className="text-sm text-zinc-400 mb-8">
-                           Are you sure you want to delete <strong className="text-white">{fileToDelete.name}</strong>? This action cannot be undone.
+                         <h3 className="text-xl font-black text-white uppercase tracking-tight mb-2">Remove File</h3>
+                         <p className="text-sm text-zinc-400 mb-6">
+                           Remove <strong className="text-white">{fileToDelete.name}</strong> from this project. The safe option keeps the original storage file intact.
                          </p>
-                         <div className="flex items-center gap-4 w-full">
+                         <div className="flex flex-col gap-3 w-full">
+                           <Button
+                             className="w-full py-3 text-xs tracking-[0.2em] uppercase font-bold bg-white text-black hover:bg-zinc-200 border-0"
+                             onClick={() => confirmRemoveFile(false)}
+                           >
+                             Remove From Project
+                           </Button>
+                           <Button
+                             className="w-full py-3 text-xs tracking-[0.2em] uppercase font-bold bg-red-600 hover:bg-red-500 text-white border-0"
+                             onClick={() => confirmRemoveFile(true)}
+                           >
+                             Delete Everywhere
+                           </Button>
                            <Button
                              variant="secondary"
-                             className="flex-1 py-3 text-xs tracking-[0.2em] uppercase font-bold"
+                             className="w-full py-3 text-xs tracking-[0.2em] uppercase font-bold"
                              onClick={() => setFileToDelete(null)}
                            >
                              Cancel
-                           </Button>
-                           <Button
-                             className="flex-1 py-3 text-xs tracking-[0.2em] uppercase font-bold bg-red-600 hover:bg-red-500 text-white border-0"
-                             onClick={confirmRemoveFile}
-                           >
-                             Delete File
                            </Button>
                          </div>
                        </div>
@@ -1879,7 +2294,7 @@ export default function App() {
 
       <AnimatePresence>
         {playingVideo && (
-          <VideoModal playingVideo={playingVideo} setPlayingVideo={setPlayingVideo} />
+          <VideoModal playingVideo={playingVideo} setPlayingVideo={setPlayingVideo} user={user} />
         )}
       </AnimatePresence>
     </div>
