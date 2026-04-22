@@ -33,7 +33,8 @@ import {
   Circle,
   PackageCheck,
   Sparkles,
-  Tag
+  Tag,
+  GripVertical
 } from 'lucide-react';
 import { useDropzone, DropzoneOptions } from 'react-dropzone';
 import { format } from 'date-fns';
@@ -62,7 +63,6 @@ import {
   serverTimestamp, 
   orderBy,
   setDoc,
-  getDocs,
   Timestamp
 } from 'firebase/firestore';
 import { get, del } from 'idb-keyval';
@@ -188,7 +188,24 @@ const generateImageThumbnail = (file: File): Promise<string> => {
   });
 };
 
+const FIRESTORE_QUOTA_EXCEEDED_MESSAGE = 'Firestore daily write quota has been exhausted. Deletes and metadata updates will work again after the quota resets.';
+
+const isFirestoreQuotaExceededError = (error: unknown) => {
+  if (typeof error !== 'object' || error === null) return false;
+  const code = 'code' in error ? error.code : null;
+  const message = 'message' in error ? error.message : null;
+
+  return code === 'resource-exhausted' ||
+    (typeof message === 'string' && message.includes('Quota limit exceeded'));
+};
+
 const handleFirestoreError = (error: any, operation: string, path: string | null = null) => {
+  if (isFirestoreQuotaExceededError(error)) {
+    console.error(`Firestore quota exhausted during ${operation}`, { path, error });
+    alert(FIRESTORE_QUOTA_EXCEEDED_MESSAGE);
+    throw error;
+  }
+
   if (error.code === 'permission-denied') {
     const errorInfo = {
       error: error.message,
@@ -214,6 +231,7 @@ const handleFirestoreError = (error: any, operation: string, path: string | null
 
 type ReviewFilter = 'all' | ReviewStatus;
 type ReviewFilterCounts = Record<ReviewFilter, number>;
+const SORT_INDEX_STEP = 1000;
 
 const normalizeReviewStatus = (status?: ReviewStatus): ReviewStatus => status ?? 'unreviewed';
 
@@ -233,6 +251,71 @@ const getReviewFilterCounts = (files: FileMetadata[]): ReviewFilterCounts => {
     unreviewed: 0,
     promoted: 0,
     rejected: 0,
+  });
+};
+
+const getFileSortIndex = (file: FileMetadata) => {
+  if (typeof file.sortIndex === 'number' && Number.isFinite(file.sortIndex)) {
+    return file.sortIndex;
+  }
+
+  return -file.uploadedAt.getTime();
+};
+
+const sortFilesForDisplay = (files: FileMetadata[]) => {
+  return [...files].sort((a, b) => {
+    const sortDifference = getFileSortIndex(a) - getFileSortIndex(b);
+    if (sortDifference !== 0) return sortDifference;
+
+    return b.uploadedAt.getTime() - a.uploadedAt.getTime();
+  });
+};
+
+const getSortIndexBetween = (previousFile?: FileMetadata, nextFile?: FileMetadata) => {
+  const previousSortIndex = previousFile ? getFileSortIndex(previousFile) : null;
+  const nextSortIndex = nextFile ? getFileSortIndex(nextFile) : null;
+
+  if (previousSortIndex === null && nextSortIndex === null) return 0;
+  if (previousSortIndex === null) return nextSortIndex! - SORT_INDEX_STEP;
+  if (nextSortIndex === null) return previousSortIndex + SORT_INDEX_STEP;
+
+  const midpoint = previousSortIndex + ((nextSortIndex - previousSortIndex) / 2);
+  if (Number.isFinite(midpoint) && midpoint !== previousSortIndex && midpoint !== nextSortIndex) {
+    return midpoint;
+  }
+
+  return previousSortIndex + SORT_INDEX_STEP;
+};
+
+const reorderFiles = (files: FileMetadata[], draggedFileId: string, targetFileId: string) => {
+  const fromIndex = files.findIndex((file) => file.id === draggedFileId);
+  const toIndex = files.findIndex((file) => file.id === targetFileId);
+
+  if (fromIndex === -1 || toIndex === -1 || fromIndex === toIndex) {
+    return files;
+  }
+
+  const nextFiles = [...files];
+  const [movedFile] = nextFiles.splice(fromIndex, 1);
+  nextFiles.splice(toIndex, 0, movedFile);
+
+  return nextFiles;
+};
+
+const mergeVisibleReorder = (
+  allFiles: FileMetadata[],
+  reorderedVisibleFiles: FileMetadata[],
+  visibleFiles: FileMetadata[]
+) => {
+  const visibleFileIds = new Set(visibleFiles.map((file) => file.id));
+  let visibleIndex = 0;
+
+  return allFiles.map((file) => {
+    if (!visibleFileIds.has(file.id)) {
+      return file;
+    }
+
+    return reorderedVisibleFiles[visibleIndex++] ?? file;
   });
 };
 
@@ -620,6 +703,8 @@ export default function App() {
   const [selectedFiles, setSelectedFiles] = useState<Set<string>>(new Set());
   const [rushesReviewFilter, setRushesReviewFilter] = useState<ReviewFilter>('all');
   const [assetsReviewFilter, setAssetsReviewFilter] = useState<ReviewFilter>('all');
+  const [draggedRushId, setDraggedRushId] = useState<string | null>(null);
+  const [dragOverRushId, setDragOverRushId] = useState<string | null>(null);
 
   // 1. Auth Listener
   useEffect(() => {
@@ -667,19 +752,19 @@ export default function App() {
     const sourceQ = query(collection(db, `projects/${activeProjectId}/sourceFiles`), orderBy('uploadedAt', 'desc'));
 
     const unsubVideo = onSnapshot(videoQ, (snapshot) => {
-      setActiveVideoFiles(snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        uploadedAt: doc.data().uploadedAt ? (doc.data().uploadedAt as Timestamp).toDate() : new Date()
-      } as FileMetadata)));
+      setActiveVideoFiles(sortFilesForDisplay(snapshot.docs.map(document => ({
+        id: document.id,
+        ...document.data(),
+        uploadedAt: document.data().uploadedAt ? (document.data().uploadedAt as Timestamp).toDate() : new Date()
+      } as FileMetadata))));
     });
 
     const unsubSource = onSnapshot(sourceQ, (snapshot) => {
-      setActiveSourceFiles(snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
-        uploadedAt: doc.data().uploadedAt ? (doc.data().uploadedAt as Timestamp).toDate() : new Date()
-      } as FileMetadata)));
+      setActiveSourceFiles(sortFilesForDisplay(snapshot.docs.map(document => ({
+        id: document.id,
+        ...document.data(),
+        uploadedAt: document.data().uploadedAt ? (document.data().uploadedAt as Timestamp).toDate() : new Date()
+      } as FileMetadata))));
     });
 
     return () => {
@@ -778,6 +863,8 @@ export default function App() {
     type: 'video' | 'source';
     deleteStorage: boolean;
   }) => {
+    await deleteDoc(doc(db, `projects/${projectId}/${type}Files`, file.id));
+
     if (deleteStorage && file.videoUrl?.startsWith('local:')) {
       const localId = file.videoUrl.split(':')[1];
       if (localId) {
@@ -786,8 +873,6 @@ export default function App() {
     } else if (deleteStorage && user && isCloudBackedFile(file)) {
       await deleteCloudFile(user, file.id);
     }
-
-    await deleteDoc(doc(db, `projects/${projectId}/${type}Files`, file.id));
   }, [user]);
 
   const updateFileReviewStatus = useCallback(async ({
@@ -809,9 +894,75 @@ export default function App() {
       );
     } catch (error) {
       console.error(`Failed to update review status for ${fileId}`, error);
-      alert('Failed to update review status.');
+      alert(isFirestoreQuotaExceededError(error) ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE : 'Failed to update review status.');
     }
   }, [activeProject]);
+
+  const handleRushDragStart = useCallback((event: React.DragEvent, fileId: string) => {
+    event.stopPropagation();
+    event.dataTransfer.effectAllowed = 'move';
+    event.dataTransfer.setData('text/plain', fileId);
+    setDraggedRushId(fileId);
+    setDragOverRushId(null);
+  }, []);
+
+  const resetRushDragState = useCallback(() => {
+    setDraggedRushId(null);
+    setDragOverRushId(null);
+  }, []);
+
+  const persistRushPosition = useCallback(async (projectId: string, fileId: string, sortIndex: number) => {
+    await setDoc(
+      doc(db, `projects/${projectId}/videoFiles`, fileId),
+      { sortIndex },
+      { merge: true }
+    );
+  }, []);
+
+  const handleRushDrop = useCallback(async (event: React.DragEvent, targetFileId: string) => {
+    event.preventDefault();
+    event.stopPropagation();
+
+    const draggedFileId = event.dataTransfer.getData('text/plain') || draggedRushId;
+    if (!activeProject || !draggedFileId || draggedFileId === targetFileId) {
+      resetRushDragState();
+      return;
+    }
+
+    const reorderedVisibleFiles = reorderFiles(filteredVideoFiles, draggedFileId, targetFileId);
+    if (reorderedVisibleFiles === filteredVideoFiles) {
+      resetRushDragState();
+      return;
+    }
+
+    const nextVideoFiles = mergeVisibleReorder(activeVideoFiles, reorderedVisibleFiles, filteredVideoFiles);
+    const movedFileIndex = nextVideoFiles.findIndex((file) => file.id === draggedFileId);
+    const nextSortIndex = getSortIndexBetween(
+      nextVideoFiles[movedFileIndex - 1],
+      nextVideoFiles[movedFileIndex + 1]
+    );
+    const nextVideoFilesWithSortIndex = nextVideoFiles.map((file) => (
+      file.id === draggedFileId ? { ...file, sortIndex: nextSortIndex } : file
+    ));
+
+    setActiveVideoFiles(nextVideoFilesWithSortIndex);
+    resetRushDragState();
+
+    try {
+      await persistRushPosition(activeProject.id, draggedFileId, nextSortIndex);
+    } catch (error) {
+      setActiveVideoFiles(activeVideoFiles);
+      console.error('Failed to persist rush order', error);
+      alert(isFirestoreQuotaExceededError(error) ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE : 'Failed to save the new rush order.');
+    }
+  }, [
+    activeProject,
+    activeVideoFiles,
+    draggedRushId,
+    filteredVideoFiles,
+    persistRushPosition,
+    resetRushDragState,
+  ]);
   
   const handleBulkDownload = async () => {
     if (selectedFiles.size === 0 || !user) return;
@@ -912,7 +1063,7 @@ export default function App() {
       setShowBulkDeleteConfirm(false);
     } catch (err) {
       console.error("Failed to delete selected files", err);
-      alert("Failed to delete one or more files.");
+      alert(isFirestoreQuotaExceededError(err) ? FIRESTORE_QUOTA_EXCEEDED_MESSAGE : "Failed to delete one or more files.");
     } finally {
       setIsDeleting(false);
     }
@@ -1131,7 +1282,9 @@ export default function App() {
 
     setUploadingFiles(prev => [...prev, ...files.map(f => ({ file: f, type }))]);
     try {
-      for (const file of files) {
+      const uploadOrderBase = Date.now();
+
+      for (const [fileIndex, file] of files.entries()) {
         let cloudUpload: Awaited<ReturnType<typeof uploadFileToCloud>> | null = null;
 
         try {
@@ -1152,6 +1305,7 @@ export default function App() {
             size: file.size,
             type: file.type,
             uploadedAt: serverTimestamp(),
+            sortIndex: -(uploadOrderBase + fileIndex),
             previewUrl: previewUrl,
             videoUrl: cloudUpload.videoUrl,
             reviewStatus: 'unreviewed',
@@ -1525,11 +1679,33 @@ export default function App() {
                           initial={{ opacity: 0, scale: 0.95 }}
                           animate={{ opacity: 1, scale: 1 }}
                           exit={{ opacity: 0, scale: 0.95 }}
+                          onDragOver={(event) => {
+                            if (!draggedRushId || draggedRushId === file.id) return;
+                            event.preventDefault();
+                            event.dataTransfer.dropEffect = 'move';
+                            setDragOverRushId(file.id);
+                          }}
+                          onDragEnter={(event) => {
+                            if (!draggedRushId || draggedRushId === file.id) return;
+                            event.preventDefault();
+                            setDragOverRushId(file.id);
+                          }}
+                          onDragLeave={(event) => {
+                            const relatedTarget = event.relatedTarget;
+                            if (!(relatedTarget instanceof Node) || !event.currentTarget.contains(relatedTarget)) {
+                              setDragOverRushId((currentId) => currentId === file.id ? null : currentId);
+                            }
+                          }}
+                          onDrop={(event) => {
+                            void handleRushDrop(event, file.id);
+                          }}
                           className={cn(
                             "group relative overflow-hidden transition-all rounded-xl border",
                             selectedFiles.has(file.id) 
                               ? "bg-emerald-950/20 border-emerald-500/50 shadow-[0_0_15px_rgba(16,185,129,0.15)]" 
-                              : "bg-zinc-900/50 border-zinc-900 hover:border-zinc-700"
+                              : "bg-zinc-900/50 border-zinc-900 hover:border-zinc-700",
+                            draggedRushId === file.id && "opacity-60",
+                            dragOverRushId === file.id && draggedRushId !== file.id && "border-emerald-400/70 ring-2 ring-emerald-400/40 ring-offset-2 ring-offset-[#0a0a0a]"
                           )}
                         >
                           <div 
@@ -1546,6 +1722,7 @@ export default function App() {
                               <img 
                                 src={file.previewUrl} 
                                 alt={`${file.name} thumbnail`}
+                                draggable={false}
                                 className={cn(
                                   "w-full h-full object-cover brightness-110 contrast-105 transition-[filter,opacity]",
                                   selectedFiles.has(file.id) ? "opacity-85" : "opacity-90 group-hover/video:opacity-100"
@@ -1577,6 +1754,19 @@ export default function App() {
                             </button>
 
                             <div className="absolute top-3 right-3 flex gap-1 transform translate-x-2 opacity-0 group-hover:translate-x-0 group-hover:opacity-100 transition-all scale-90 z-10">
+                              <button
+                                type="button"
+                                draggable={filteredVideoFiles.length > 1}
+                                onClick={(e) => e.stopPropagation()}
+                                onDragStart={(e) => handleRushDragStart(e, file.id)}
+                                onDragEnd={resetRushDragState}
+                                disabled={filteredVideoFiles.length <= 1}
+                                className="p-2 bg-zinc-950/80 text-zinc-400 rounded-md hover:bg-zinc-800 hover:text-white border border-zinc-800 cursor-grab active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-40"
+                                title="Drag to reorder"
+                                aria-label={`Drag ${file.name} to reorder`}
+                              >
+                                <GripVertical className="w-3 h-3" />
+                              </button>
                               <button 
                                 onClick={(e) => {
                                   e.stopPropagation();

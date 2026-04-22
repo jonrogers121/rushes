@@ -8,6 +8,7 @@ export interface FileMetadata {
   previewUrl?: string;
   videoUrl?: string;
   uploadedAt: Date;
+  sortIndex?: number;
   aiAnalysis?: {
     summary: string;
     tags: string[];
